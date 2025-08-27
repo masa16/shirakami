@@ -1,14 +1,14 @@
-file(GLOB YCSB_SOURCES
-        "ycsb.cpp"
+file(GLOB YCSB_LTX_SOURCES
+        "ycsb_ltx.cpp"
         "build_db.cpp"
         "result.cpp"
         )
 
-add_executable(ycsb
-        ${YCSB_SOURCES}
+add_executable(ycsb_ltx
+        ${YCSB_LTX_SOURCES}
         )
 
-target_link_libraries(ycsb
+target_link_libraries(ycsb_ltx
         PRIVATE gflags::gflags
         PRIVATE glog::glog
         PRIVATE shirakami
@@ -23,12 +23,12 @@ target_link_libraries(ycsb
         )
 
 if (BUILD_PWAL)
-  target_link_libraries(ycsb
+  target_link_libraries(ycsb_ltx
         PRIVATE limestone
   )
 endif()
 
-target_include_directories(ycsb
+target_include_directories(ycsb_ltx
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
         PRIVATE ${PROJECT_SOURCE_DIR}/bench
@@ -41,5 +41,5 @@ target_include_directories(ycsb
         )
 
 add_test(
-        NAME ycsb
-        COMMAND ycsb)
+        NAME ycsb_ltx
+        COMMAND ycsb_ltx)

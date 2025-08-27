@@ -17,6 +17,7 @@
 #include <xmmintrin.h>
 
 #include <cstring>
+#include <cstdint>
 
 // shirakami/test
 #include "result.h"
@@ -60,6 +61,10 @@ DEFINE_uint64(record, 10, "# database records(tuples).");              // NOLINT
 DEFINE_uint64(rratio, 100, "rate of reads in a transaction.");         // NOLINT
 DEFINE_uint64(scan_length, 100, "number of records in scan range.");   // NOLINT
 DEFINE_double(skew, 0.0, "access skew of transaction.");               // NOLINT
+DEFINE_double(ltx_ratio, 0.0, "ratio of LTX.");                        // NOLINT
+DEFINE_uint64(ltx_ops, 1, "operetions per tx for LTX.");               // NOLINT
+DEFINE_string(ltx_read_type, "off", "type of read operation in LTX."); // NOLINT
+DEFINE_uint64(ltx_rratio, 100, "rate of reads in a LTX.");             // NOLINT
 DEFINE_uint64(thread, 1, "# worker threads.");                         // NOLINT
 DEFINE_string(transaction_type, "short", "type of transaction.");      // NOLINT
 DEFINE_uint64(val_length, 4, "# length of value(payload).");           // NOLINT
@@ -175,11 +180,45 @@ static void load_flags() {
                    << "Access skew of transaction must be in the range 0 to "
                       "0.999... .";
     }
+    if (FLAGS_scan_length >= 0 && FLAGS_scan_length <= FLAGS_record) {
+        printf("FLAGS_scan_length : %zu\n", FLAGS_scan_length); // NOLINT
+    } else {
+        LOG_FIRST_N(ERROR, 1) << log_location_prefix
+          << "scan length must be up to the number of records.";
+    }
+    // LTX options
+    if (FLAGS_ltx_ratio >= 0 && FLAGS_ltx_ratio <= 1) {
+        printf("FLAGS_ltx_ratio : %f\n", FLAGS_ltx_ratio); // NOLINT
+    } else {
+        LOG_FIRST_N(ERROR, 1) << log_location_prefix
+          << "Access ltx_ratio of transaction must be in the range 0 to 1.";
+    }
+    if (FLAGS_ltx_ops >= 1) {
+        printf("FLAGS_ltx_ops : %zu\n", FLAGS_ltx_ops); // NOLINT
+    } else {
+        LOG_FIRST_N(ERROR, 1) << log_location_prefix
+                   << "Number of operations in a transaction must be larger "
+                      "than 0.";
+    }
+    // ltx_read_type
+    printf("FLAGS_ltx_read_type : %s\n", // NOLINT
+           FLAGS_ltx_read_type.data());  // NOLINT
+    if (FLAGS_ltx_read_type != "point" && FLAGS_ltx_read_type != "range" && FLAGS_ltx_read_type != "off") {
+        LOG_FIRST_N(ERROR, 1) << log_location_prefix << "Invalid type of read operation.";
+    }
+    if (FLAGS_ltx_rratio >= 0 && FLAGS_ltx_rratio <= thousand) {
+        printf("FLAGS_ltx_rratio : %zu\n", FLAGS_ltx_rratio); // NOLINT
+    } else {
+        LOG_FIRST_N(ERROR, 1) << log_location_prefix
+                   << "Rate of reads in a transaction must be in the range 0 "
+                      "to 100.";
+    }
+
 
     // transaction_type
     printf("FLAGS_transaction_type : %s\n", // NOLINT
            FLAGS_transaction_type.data());  // NOLINT
-    if (FLAGS_transaction_type != "short" && FLAGS_transaction_type != "long" &&
+    if (FLAGS_transaction_type != "short" && FLAGS_transaction_type != "long" && FLAGS_transaction_type != "mix" &&
         FLAGS_transaction_type != "read_only") {
         LOG_FIRST_N(ERROR, 1) << log_location_prefix << "Invalid type of transaction.";
     }
@@ -266,19 +305,33 @@ void worker(const std::size_t thid, char& ready, const bool& start,
 
     Token token{};
     std::vector<shirakami::opr_obj> opr_set;
-    opr_set.reserve(FLAGS_ops);
+    opr_set.reserve(FLAGS_ltx_ops > FLAGS_ops ? FLAGS_ltx_ops : FLAGS_ops);
     auto ret = enter(token);
     if (ret != Status::OK) { LOG(FATAL) << "too many tx handle: " << ret; }
     auto* ti = static_cast<session*>(token);
 
+    uint64_t ltx_ratio = static_cast<uint64_t>(FLAGS_ltx_ratio * UINT64_MAX);
+    uint64_t ltx_commit_counts = 0;
     storeRelease(ready, 1);
     while (!loadAcquire(start)) _mm_pause();
-
     while (likely(!loadAcquire(quit))) {
-        // gen query contents
-        gen_tx_rw(opr_set, FLAGS_key_length, FLAGS_record, FLAGS_thread, thid,
-                  FLAGS_ops, FLAGS_ops_read_type, FLAGS_ops_write_type,
-                  FLAGS_rratio, rnd, zipf);
+        bool is_ltx;
+        if (rnd.next() < ltx_ratio) {
+            std::string read_type;
+            read_type = (FLAGS_ltx_read_type == "off") ?
+              FLAGS_ops_read_type : FLAGS_ltx_read_type;
+            // gen query contents
+            gen_tx_rw(opr_set, FLAGS_key_length, FLAGS_record, FLAGS_thread, thid,
+                      FLAGS_ltx_ops, read_type, FLAGS_ops_write_type,
+                      FLAGS_ltx_rratio, rnd, zipf);
+            is_ltx = true;
+        } else {
+            // gen query contents
+            gen_tx_rw(opr_set, FLAGS_key_length, FLAGS_record, FLAGS_thread, thid,
+                      FLAGS_ops, FLAGS_ops_read_type, FLAGS_ops_write_type,
+                      FLAGS_rratio, rnd, zipf);
+            is_ltx = false;
+        }
 
         if (ret == Status::WARN_ALREADY_BEGIN) { LOG(FATAL); }
 
@@ -287,9 +340,11 @@ void worker(const std::size_t thid, char& ready, const bool& start,
         if (FLAGS_transaction_type == "short") {
             tt = transaction_options::transaction_type::SHORT;
             ret = tx_begin({token, tt});
-        } else if (FLAGS_transaction_type == "long") {
-            tt = transaction_options::transaction_type::LONG;
-            if (FLAGS_rratio == 100) { // NOLINT
+        } else if (FLAGS_transaction_type == "long" || FLAGS_transaction_type == "mix") {
+            tt = (FLAGS_transaction_type == "mix" && !is_ltx) ?
+                transaction_options::transaction_type::SHORT :
+                transaction_options::transaction_type::LONG;
+            if (FLAGS_ltx_rratio == 100) { // NOLINT
                 ret = tx_begin({token, tt});
             } else {
                 ret = tx_begin({token, tt, {storage}});
@@ -376,12 +431,14 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                     // should goto ABORT_WITHOUT_COUNT,
                     // but aborting after commit request is not stable
                     // so leave the transaction as it is.
+                    printf("ltx_commit_counts=%zu\n",ltx_commit_counts);
                     return;
                 }
             } while (ret == Status::WARN_WAITING_FOR_OTHER_TX);
         }
         if (ret == Status::OK) { // NOLINT
             ++myres.get().get_local_commit_counts();
+            if (is_ltx) ++ltx_commit_counts;
         } else {
     ABORTED: // NOLINT
             ++myres.get().get_local_abort_counts();
@@ -391,4 +448,5 @@ void worker(const std::size_t thid, char& ready, const bool& start,
     }
     ret = leave(token);
     if (ret != Status::OK) { LOG_FIRST_N(ERROR, 1) << ret; }
+    printf("ltx_commit_counts=%zu\n",ltx_commit_counts);
 }
