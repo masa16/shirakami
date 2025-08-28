@@ -1,7 +1,7 @@
 file(GLOB YCSB_LTX_SOURCES
         "ycsb_ltx.cpp"
         "build_db.cpp"
-        "result.cpp"
+        "result_ltx.cpp"
         )
 
 add_executable(ycsb_ltx

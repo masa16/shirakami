@@ -22,6 +22,8 @@ public:
 
     void addLocalCommitCounts(uint64_t count);
 
+    void addLocalLtxCommitCounts(uint64_t count);
+
     void addLocalAbortByOperation(uint64_t count);
 
     void addLocalAbortByValidation(uint64_t count);
@@ -85,6 +87,8 @@ public:
     void displayAbortRate() const;
 
     void displayCommitCounts() const;
+
+    void displayLtxCommitCounts() const;
 
     void displayTps(size_t extime) const;
 
@@ -159,6 +163,10 @@ public:
         return local_commit_counts_;
     }
 
+    [[nodiscard]] std::uint64_t& get_local_ltx_commit_counts() { // NOLINT
+        return local_ltx_commit_counts_;
+    }
+
     [[nodiscard]] std::uint64_t& get_local_abort_counts() { // NOLINT
         return local_abort_counts_;
     }
@@ -166,6 +174,7 @@ public:
 private:
     alignas(CACHE_LINE_SIZE) std::uint64_t local_abort_counts_ = 0;
     std::uint64_t local_commit_counts_ = 0;
+    std::uint64_t local_ltx_commit_counts_ = 0;
     std::uint64_t local_abort_by_operation_ = 0;
     std::uint64_t local_abort_by_validation_ = 0;
     std::uint64_t local_commit_latency_ = 0;
@@ -196,6 +205,7 @@ private:
     std::uint64_t local_write_latency_ = 0;
     std::uint64_t total_abort_counts_ = 0;
     std::uint64_t total_commit_counts_ = 0;
+    std::uint64_t total_ltx_commit_counts_ = 0;
     std::uint64_t total_abort_by_operation_ = 0;
     std::uint64_t total_abort_by_validation_ = 0;
     std::uint64_t total_commit_latency_ = 0;

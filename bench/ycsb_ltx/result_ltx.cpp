@@ -6,7 +6,7 @@
 
 // shirakami-impl interface library
 #include "memory.h"
-#include "result.h"
+#include "result_ltx.h"
 #include "concurrency_control/include/epoch.h"
 
 namespace shirakami {
@@ -59,6 +59,10 @@ void Result::displayCommitCounts() const {
     std::cout << "commit_counts_:\t" << total_commit_counts_ << std::endl;
 }
 
+void Result::displayLtxCommitCounts() const {
+    std::cout << "ltx_commit_counts_:\t" << total_ltx_commit_counts_ << std::endl;
+}
+
 void Result::displayEnvironmentalParameter() {
     std::cout << "epoch_duration[us]:\t" << epoch::get_global_epoch_time_us()
               << std::endl;
@@ -75,6 +79,8 @@ void Result::displayTps(size_t extime) const {
         std::cout << std::fixed << std::setprecision(4);
         std::cout << "latency[ns]:\t" << ns_sec / result << std::endl;
         std::cout << "throughput[tps]:\t" << result << std::endl;
+        result = static_cast<long double>(total_ltx_commit_counts_) / extime;
+        std::cout << "LTX_throughput[tps]:\t" << result << std::endl;
     }
 }
 
@@ -414,6 +420,10 @@ void Result::addLocalCommitCounts(uint64_t count) {
     total_commit_counts_ += count;
 }
 
+void Result::addLocalLtxCommitCounts(uint64_t count) {
+    total_ltx_commit_counts_ += count;
+}
+
 void Result::addLocalAbortByOperation(uint64_t count) {
     total_abort_by_operation_ += count;
 }
@@ -550,6 +560,7 @@ void Result::displayAllResult([[maybe_unused]] size_t clocks_per_us,
     displayVersionReuse();
     displayAbortCounts();
     displayCommitCounts();
+    displayLtxCommitCounts();
     displayRusageRUMaxrss();
     displayAbortRate();
     displayTps(extime);
@@ -559,6 +570,7 @@ void Result::displayAllResult([[maybe_unused]] size_t clocks_per_us,
 void Result::addLocalAllResult(const Result& other) {
     addLocalAbortCounts(other.local_abort_counts_);
     addLocalCommitCounts(other.local_commit_counts_);
+    addLocalLtxCommitCounts(other.local_ltx_commit_counts_);
     addLocalAbortByOperation(other.local_abort_by_operation_);
     addLocalAbortByValidation(other.local_abort_by_validation_);
     addLocalBackoffLatency(other.local_backoff_latency_);

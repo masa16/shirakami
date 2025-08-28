@@ -20,7 +20,7 @@
 #include <cstdint>
 
 // shirakami/test
-#include "result.h"
+#include "result_ltx.h"
 
 // shirakami/bench
 #include "build_db.h"
@@ -395,21 +395,26 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                                 scan_endpoint::INCLUSIVE, hd,
                                 FLAGS_scan_length);
                 if (ret == Status::WARN_PREMATURE) {
-                    _mm_pause();
                     ++retry_count;
+                    if (loadAcquire(quit)) goto ABORT_WITHOUT_COUNT;
+                    _mm_pause();
                     goto retry_scan;
                     //goto ABORTED;
                 }
-                if (retry_count>0)
-                    printf("[WARN_PREMATURE retry thid=%zu count=%zu]\n",thid,retry_count);
+                //if (retry_count>0)
+                //    printf("[WARN_PREMATURE retry thid=%zu count=%zu]\n",thid,retry_count);
                 if (ret != Status::OK || ret == Status::ERR_CC) {
                     LOG(FATAL) << "unexpected error, rc: " << ret;
                 }
                 std::string vb{};
                 do {
-                    ret = read_value_from_scan(token, hd, vb);
+                    do {
+                        ret = read_value_from_scan(token, hd, vb);
+                        if (loadAcquire(quit)) goto ABORT_WITHOUT_COUNT;
+                        _mm_pause();
+                    } while (ret == Status::WARN_CONCURRENT_INSERT || ret == Status::WARN_CONCURRENT_UPDATE);
                     if (ret == Status::ERR_CC) { goto ABORTED; } // NOLINT
-                    if (ret != Status::OK) { LOG(FATAL) << "unexpected error"; }
+                    if (ret != Status::OK) { LOG(FATAL) << "unexpected error: " << ret; }
                     ret = next(token, hd);
                     if (loadAcquire(quit)) {
                         // for fast exit if it is over exp time.
@@ -441,14 +446,13 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                     // should goto ABORT_WITHOUT_COUNT,
                     // but aborting after commit request is not stable
                     // so leave the transaction as it is.
-                    printf("ltx_commit_counts=%zu\n",ltx_commit_counts);
                     return;
                 }
             } while (ret == Status::WARN_WAITING_FOR_OTHER_TX);
         }
         if (ret == Status::OK) { // NOLINT
             ++myres.get().get_local_commit_counts();
-            if (is_ltx) ++ltx_commit_counts;
+            if (is_ltx) ++myres.get().get_local_ltx_commit_counts();
         } else {
     ABORTED: // NOLINT
             ++myres.get().get_local_abort_counts();
@@ -458,5 +462,4 @@ void worker(const std::size_t thid, char& ready, const bool& start,
     }
     ret = leave(token);
     if (ret != Status::OK) { LOG_FIRST_N(ERROR, 1) << ret; }
-    printf("ltx_commit_counts=%zu\n",ltx_commit_counts);
 }
