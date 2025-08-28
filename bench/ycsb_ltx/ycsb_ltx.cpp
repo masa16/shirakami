@@ -388,10 +388,20 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                 // rarely, ret == already_exist due to design
             } else if (itr.get_type() == OP_TYPE::SCAN) {
                 ScanHandle hd{};
+                size_t retry_count=0;
+            retry_scan:
                 ret = open_scan(token, storage, itr.get_scan_l_key(),
                                 scan_endpoint::INCLUSIVE, itr.get_scan_r_key(),
                                 scan_endpoint::INCLUSIVE, hd,
                                 FLAGS_scan_length);
+                if (ret == Status::WARN_PREMATURE) {
+                    _mm_pause();
+                    ++retry_count;
+                    goto retry_scan;
+                    //goto ABORTED;
+                }
+                if (retry_count>0)
+                    printf("[WARN_PREMATURE retry thid=%zu count=%zu]\n",thid,retry_count);
                 if (ret != Status::OK || ret == Status::ERR_CC) {
                     LOG(FATAL) << "unexpected error, rc: " << ret;
                 }
