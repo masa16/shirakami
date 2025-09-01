@@ -218,7 +218,9 @@ static void load_flags() {
     // transaction_type
     printf("FLAGS_transaction_type : %s\n", // NOLINT
            FLAGS_transaction_type.data());  // NOLINT
-    if (FLAGS_transaction_type != "short" && FLAGS_transaction_type != "long" && FLAGS_transaction_type != "mix" &&
+    if (FLAGS_transaction_type != "short" && FLAGS_transaction_type != "long" &&
+        FLAGS_transaction_type != "mix" && FLAGS_transaction_type != "mix_by_thread" &&
+        FLAGS_transaction_type != "short_by_thread" &&
         FLAGS_transaction_type != "read_only") {
         LOG_FIRST_N(ERROR, 1) << log_location_prefix << "Invalid type of transaction.";
     }
@@ -312,39 +314,60 @@ void worker(const std::size_t thid, char& ready, const bool& start,
 
     uint64_t ltx_ratio = static_cast<uint64_t>(FLAGS_ltx_ratio * UINT64_MAX);
     uint64_t ltx_commit_counts = 0;
+    bool wo_wp = FLAGS_rratio==100 && (FLAGS_ltx_ratio==0 || FLAGS_ltx_rratio==100);
+    size_t retry_scan_count=0;
+    size_t retry_update_count=0;
+    size_t retry_insert_count=0;
     storeRelease(ready, 1);
     while (!loadAcquire(start)) _mm_pause();
     while (likely(!loadAcquire(quit))) {
         bool is_ltx;
-        if (rnd.next() < ltx_ratio) {
-            std::string read_type;
-            read_type = (FLAGS_ltx_read_type == "off") ?
-              FLAGS_ops_read_type : FLAGS_ltx_read_type;
-            // gen query contents
-            gen_tx_rw(opr_set, FLAGS_key_length, FLAGS_record, FLAGS_thread, thid,
-                      FLAGS_ltx_ops, read_type, FLAGS_ops_write_type,
-                      FLAGS_ltx_rratio, rnd, zipf);
-            is_ltx = true;
+        if (FLAGS_transaction_type == "mix_by_thread" || FLAGS_transaction_type == "short_by_thread") {
+            if (thid!=0) {
+                // gen query contents
+                gen_tx_rw(opr_set, FLAGS_key_length, FLAGS_record, FLAGS_thread, thid,
+                          FLAGS_ops, FLAGS_ops_read_type, FLAGS_ops_write_type,
+                          FLAGS_rratio, rnd, zipf);
+                is_ltx = false;
+            } else {
+                // gen query contents
+                gen_tx_scan(opr_set, FLAGS_key_length, FLAGS_record,
+                            FLAGS_scan_length, rnd, zipf);
+                is_ltx = true;
+            }
         } else {
-            // gen query contents
-            gen_tx_rw(opr_set, FLAGS_key_length, FLAGS_record, FLAGS_thread, thid,
-                      FLAGS_ops, FLAGS_ops_read_type, FLAGS_ops_write_type,
-                      FLAGS_rratio, rnd, zipf);
-            is_ltx = false;
+            if (rnd.next() < ltx_ratio) {
+                std::string read_type;
+                read_type = (FLAGS_ltx_read_type == "off") ?
+                  FLAGS_ops_read_type : FLAGS_ltx_read_type;
+                // gen query contents
+                gen_tx_rw(opr_set, FLAGS_key_length, FLAGS_record, FLAGS_thread, thid,
+                          FLAGS_ltx_ops, read_type, FLAGS_ops_write_type,
+                          FLAGS_ltx_rratio, rnd, zipf);
+                is_ltx = true;
+            } else {
+                // gen query contents
+                gen_tx_rw(opr_set, FLAGS_key_length, FLAGS_record, FLAGS_thread, thid,
+                          FLAGS_ops, FLAGS_ops_read_type, FLAGS_ops_write_type,
+                          FLAGS_rratio, rnd, zipf);
+                is_ltx = false;
+            }
         }
 
         if (ret == Status::WARN_ALREADY_BEGIN) { LOG(FATAL); }
 
         // tx begin
         transaction_options::transaction_type tt{};
-        if (FLAGS_transaction_type == "short") {
+        if (FLAGS_transaction_type == "short" || FLAGS_transaction_type == "short_by_thread" ||
+            (FLAGS_transaction_type == "mix_by_thread" && thid!=0)) {
             tt = transaction_options::transaction_type::SHORT;
             ret = tx_begin({token, tt});
-        } else if (FLAGS_transaction_type == "long" || FLAGS_transaction_type == "mix") {
-            tt = (FLAGS_transaction_type == "mix" && !is_ltx) ?
-                transaction_options::transaction_type::SHORT :
-                transaction_options::transaction_type::LONG;
-            if (FLAGS_ltx_rratio == 100) { // NOLINT
+        } else if (FLAGS_transaction_type == "long" || FLAGS_transaction_type == "mix" ||
+                   (FLAGS_transaction_type == "mix_by_thread" && thid==0)) {
+            tt = (FLAGS_transaction_type == "long" || is_ltx) ?
+                 transaction_options::transaction_type::LONG :
+                 transaction_options::transaction_type::SHORT;
+            if (wo_wp || !is_ltx) { // NOLINT
                 ret = tx_begin({token, tt});
             } else {
                 ret = tx_begin({token, tt, {storage}});
@@ -361,7 +384,7 @@ void worker(const std::size_t thid, char& ready, const bool& start,
             LOG(FATAL) << log_location_prefix << "invalid transaction type";
         }
         if (ret != Status::OK) {
-            LOG(FATAL) << log_location_prefix << "unexpected error. " << ret;
+            LOG(FATAL) << log_location_prefix << "unexpected error. " << ret << " is_ltx=" << (is_ltx?"t":"f") << " wo_wp=" << (wo_wp?"t":"f") << " tt=" << tt << " ";
         }
 
         // execute operations
@@ -377,34 +400,51 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                     }
                 }
             } else if (itr.get_type() == OP_TYPE::UPDATE) {
+            retry_update:
                 ret = update(token, storage, itr.get_key(),
                              std::string(FLAGS_val_length, '0'));
-                if (ret == Status::ERR_CC) {
-                    LOG(FATAL) << "unexpected error, rc: " << ret;
+                if (ret == Status::WARN_WRITE_WITHOUT_WP || ret == Status::WARN_CONFLICT_ON_WRITE_PRESERVE) {
+                    ++retry_update_count;
+                    if (loadAcquire(quit)) goto ABORT_WITHOUT_COUNT;
+                    _mm_pause();
+                    goto retry_update;
+                    //goto ABORTED;
+                }
+                if (ret != Status::OK || ret == Status::ERR_CC) {
+                    LOG(FATAL) << "unexpected error, rc: " << ret << " ";
                 }
             } else if (itr.get_type() == OP_TYPE::INSERT) {
-                insert(token, storage, itr.get_key(),
-                       std::string(FLAGS_val_length, '0'));
+            retry_insert:
+                ret = insert(token, storage, itr.get_key(),
+                             std::string(FLAGS_val_length, '0'));
+                if (ret == Status::WARN_WRITE_WITHOUT_WP || ret == Status::WARN_CONFLICT_ON_WRITE_PRESERVE) {
+                    ++retry_insert_count;
+                    if (loadAcquire(quit)) goto ABORT_WITHOUT_COUNT;
+                    _mm_pause();
+                    goto retry_insert;
+                    //goto ABORTED;
+                }
+                if (ret != Status::OK) {
+                    LOG(FATAL) << "unexpected error, rc: " << ret << " is_ltx=" << is_ltx << " ";
+                }
                 // rarely, ret == already_exist due to design
             } else if (itr.get_type() == OP_TYPE::SCAN) {
                 ScanHandle hd{};
-                size_t retry_count=0;
             retry_scan:
                 ret = open_scan(token, storage, itr.get_scan_l_key(),
                                 scan_endpoint::INCLUSIVE, itr.get_scan_r_key(),
                                 scan_endpoint::INCLUSIVE, hd,
                                 FLAGS_scan_length);
                 if (ret == Status::WARN_PREMATURE) {
-                    ++retry_count;
+                    ++retry_scan_count;
                     if (loadAcquire(quit)) goto ABORT_WITHOUT_COUNT;
                     _mm_pause();
                     goto retry_scan;
                     //goto ABORTED;
                 }
-                //if (retry_count>0)
-                //    printf("[WARN_PREMATURE retry thid=%zu count=%zu]\n",thid,retry_count);
+                if (ret == Status::ERR_CC) { goto ABORTED; } // NOLINT
                 if (ret != Status::OK || ret == Status::ERR_CC) {
-                    LOG(FATAL) << "unexpected error, rc: " << ret;
+                    LOG(FATAL) << "unexpected error, rc: " << ret << " ";
                 }
                 std::string vb{};
                 do {
@@ -414,7 +454,7 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                         _mm_pause();
                     } while (ret == Status::WARN_CONCURRENT_INSERT || ret == Status::WARN_CONCURRENT_UPDATE);
                     if (ret == Status::ERR_CC) { goto ABORTED; } // NOLINT
-                    if (ret != Status::OK) { LOG(FATAL) << "unexpected error: " << ret; }
+                    if (ret != Status::OK) { LOG(FATAL) << "unexpected error: " << ret << " "; }
                     ret = next(token, hd);
                     if (loadAcquire(quit)) {
                         // for fast exit if it is over exp time.
@@ -423,7 +463,7 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                     }
                 } while (ret != Status::WARN_SCAN_LIMIT);
                 ret = close_scan(token, hd);
-                if (ret != Status::OK) { LOG(FATAL) << "unexpected error"; }
+                if (ret != Status::OK) { LOG(FATAL) << "unexpected error: " << ret << " "; }
             }
             if (loadAcquire(quit)) {
                 // for fast exit if it is over exp time.
@@ -446,6 +486,7 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                     // should goto ABORT_WITHOUT_COUNT,
                     // but aborting after commit request is not stable
                     // so leave the transaction as it is.
+                    goto leaving;
                     return;
                 }
             } while (ret == Status::WARN_WAITING_FOR_OTHER_TX);
@@ -456,10 +497,15 @@ void worker(const std::size_t thid, char& ready, const bool& start,
         } else {
     ABORTED: // NOLINT
             ++myres.get().get_local_abort_counts();
+            if (is_ltx) ++myres.get().get_local_ltx_abort_counts();
     ABORT_WITHOUT_COUNT: // NOLINT
             abort(token);
         }
     }
     ret = leave(token);
     if (ret != Status::OK) { LOG_FIRST_N(ERROR, 1) << ret; }
+ leaving:
+    if (retry_scan_count>0) printf("retry_scan_count=%zu thid=%zu\n",retry_scan_count,thid);
+    if (retry_update_count>0) printf("retry_update_count=%zu thid=%zu\n",retry_update_count,thid);
+    if (retry_insert_count>0) printf("retry_insert_count=%zu thid=%zu\n",retry_insert_count,thid);
 }

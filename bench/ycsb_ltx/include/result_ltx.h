@@ -20,6 +20,8 @@ public:
 
     void addLocalAbortCounts(uint64_t count);
 
+    void addLocalLtxAbortCounts(uint64_t count);
+
     void addLocalCommitCounts(uint64_t count);
 
     void addLocalLtxCommitCounts(uint64_t count);
@@ -83,6 +85,8 @@ public:
     static void displayEnvironmentalParameter();
 
     void displayAbortCounts() const;
+
+    void displayLtxAbortCounts() const;
 
     void displayAbortRate() const;
 
@@ -171,8 +175,13 @@ public:
         return local_abort_counts_;
     }
 
+    [[nodiscard]] std::uint64_t& get_local_ltx_abort_counts() { // NOLINT
+        return local_ltx_abort_counts_;
+    }
+
 private:
     alignas(CACHE_LINE_SIZE) std::uint64_t local_abort_counts_ = 0;
+    std::uint64_t local_ltx_abort_counts_ = 0;
     std::uint64_t local_commit_counts_ = 0;
     std::uint64_t local_ltx_commit_counts_ = 0;
     std::uint64_t local_abort_by_operation_ = 0;
@@ -204,6 +213,7 @@ private:
     std::uint64_t local_version_reuse_ = 0;
     std::uint64_t local_write_latency_ = 0;
     std::uint64_t total_abort_counts_ = 0;
+    std::uint64_t total_ltx_abort_counts_ = 0;
     std::uint64_t total_commit_counts_ = 0;
     std::uint64_t total_ltx_commit_counts_ = 0;
     std::uint64_t total_abort_by_operation_ = 0;

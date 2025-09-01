@@ -41,6 +41,10 @@ void Result::displayAbortCounts() const {
     std::cout << "abort_counts_:\t" << total_abort_counts_ << std::endl;
 }
 
+ void Result::displayLtxAbortCounts() const {
+    std::cout << "ltx_abort_counts_:\t" << total_ltx_abort_counts_ << std::endl;
+}
+
 void Result::displayAbortRate() const {
     if (total_abort_counts_ == 0) {
         std::cout << "abort_rate:\t0" << std::endl;
@@ -51,6 +55,11 @@ void Result::displayAbortRate() const {
                 static_cast<double>(total_commit_counts_ + total_abort_counts_);
         FmtHolder fmt{std::cout};
         std::cout << std::fixed << std::setprecision(prec) << "abort_rate:\t"
+                  << ave_rate << std::endl;
+        ave_rate =
+                static_cast<double>(total_ltx_abort_counts_) /
+                static_cast<double>(total_ltx_commit_counts_ + total_ltx_abort_counts_);
+        std::cout << std::fixed << std::setprecision(prec) << "ltx_abort_rate:\t"
                   << ave_rate << std::endl;
     }
 }
@@ -80,7 +89,7 @@ void Result::displayTps(size_t extime) const {
         std::cout << "latency[ns]:\t" << ns_sec / result << std::endl;
         std::cout << "throughput[tps]:\t" << result << std::endl;
         result = static_cast<long double>(total_ltx_commit_counts_) / extime;
-        std::cout << "LTX_throughput[tps]:\t" << result << std::endl;
+        std::cout << "ltx_throughput[tps]:\t" << result << std::endl;
     }
 }
 
@@ -416,6 +425,10 @@ void Result::addLocalAbortCounts(uint64_t count) {
     total_abort_counts_ += count;
 }
 
+void Result::addLocalLtxAbortCounts(uint64_t count) {
+    total_ltx_abort_counts_ += count;
+}
+
 void Result::addLocalCommitCounts(uint64_t count) {
     total_commit_counts_ += count;
 }
@@ -559,6 +572,7 @@ void Result::displayAllResult([[maybe_unused]] size_t clocks_per_us,
     displayVersionMalloc();
     displayVersionReuse();
     displayAbortCounts();
+    displayLtxAbortCounts();
     displayCommitCounts();
     displayLtxCommitCounts();
     displayRusageRUMaxrss();
@@ -569,6 +583,7 @@ void Result::displayAllResult([[maybe_unused]] size_t clocks_per_us,
 
 void Result::addLocalAllResult(const Result& other) {
     addLocalAbortCounts(other.local_abort_counts_);
+    addLocalLtxAbortCounts(other.local_abort_counts_);
     addLocalCommitCounts(other.local_commit_counts_);
     addLocalLtxCommitCounts(other.local_ltx_commit_counts_);
     addLocalAbortByOperation(other.local_abort_by_operation_);
