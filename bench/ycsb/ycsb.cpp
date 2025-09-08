@@ -324,20 +324,23 @@ void worker(const std::size_t thid, char& ready, const bool& start,
             } else if (itr.get_type() == OP_TYPE::UPDATE) {
                 ret = update(token, storage, itr.get_key(),
                              std::string(FLAGS_val_length, '0'));
-                if (ret == Status::ERR_CC) {
+                if (ret != Status::OK) {
                     LOG(FATAL) << "unexpected error, rc: " << ret;
                 }
             } else if (itr.get_type() == OP_TYPE::INSERT) {
-                insert(token, storage, itr.get_key(),
+                ret = insert(token, storage, itr.get_key(),
                        std::string(FLAGS_val_length, '0'));
                 // rarely, ret == already_exist due to design
+                if (ret != Status::OK) {
+                    LOG(FATAL) << "unexpected error, rc: " << ret;
+                }
             } else if (itr.get_type() == OP_TYPE::SCAN) {
                 ScanHandle hd{};
                 ret = open_scan(token, storage, itr.get_scan_l_key(),
                                 scan_endpoint::INCLUSIVE, itr.get_scan_r_key(),
                                 scan_endpoint::INCLUSIVE, hd,
                                 FLAGS_scan_length);
-                if (ret != Status::OK || ret == Status::ERR_CC) {
+                if (ret != Status::OK) {
                     LOG(FATAL) << "unexpected error, rc: " << ret;
                 }
                 std::string vb{};

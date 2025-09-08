@@ -80,9 +80,11 @@ static void gen_tx_rw(std::vector<opr_obj>& opr_set, const std::size_t key_len,
                       FastZipf& zipf) {
     using namespace shirakami;
     opr_set.clear();
+    LOG_FIRST_N(INFO,10) << "gen_tx_rw";
     for (std::size_t i = 0; i < opnm; ++i) {
         std::uint64_t keynm = zipf() % tpnm;
         constexpr std::size_t thou = 100;
+        LOG_FIRST_N(INFO, 100) << keynm;
         if ((rnd.next() % thou) < rratio) {
             opr_set.emplace_back(OP_TYPE::SEARCH,
                                  make_key(key_len, keynm)); // NOLINT

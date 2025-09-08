@@ -25,7 +25,7 @@
 // shirakami/bench
 #include "build_db.h"
 #include "gen_key.h"
-#include "ycsb/include/gen_tx.h"
+#include "ycsb_ltx/include/gen_tx.h"
 
 // shirakami/src/include
 #include "atomic_wrapper.h"
@@ -70,6 +70,7 @@ DEFINE_string(transaction_type, "short", "type of transaction.");      // NOLINT
 DEFINE_uint64(val_length, 4, "# length of value(payload).");           // NOLINT
 DEFINE_uint64(random_seed, 0, "random seed.");
 DEFINE_uint64(epoch_duration, 0, "epoch duration in microseconds");
+DEFINE_uint64(waiting_resolver_threads, 0, "# waiting resolver threads.");
 
 static bool isReady(const std::vector<char>& readys); // NOLINT
 static void waitForReady(const std::vector<char>& readys);
@@ -180,11 +181,13 @@ static void load_flags() {
                    << "Access skew of transaction must be in the range 0 to "
                       "0.999... .";
     }
-    if (FLAGS_scan_length >= 0 && FLAGS_scan_length <= FLAGS_record) {
+    if (FLAGS_scan_length >= 0) {
+      if (FLAGS_scan_length <= FLAGS_record) {
         printf("FLAGS_scan_length : %zu\n", FLAGS_scan_length); // NOLINT
-    } else {
+      } else {
         LOG_FIRST_N(ERROR, 1) << log_location_prefix
           << "scan length must be up to the number of records.";
+      }
     }
     // LTX options
     if (FLAGS_ltx_ratio >= 0 && FLAGS_ltx_ratio <= 1) {
@@ -219,8 +222,9 @@ static void load_flags() {
     printf("FLAGS_transaction_type : %s\n", // NOLINT
            FLAGS_transaction_type.data());  // NOLINT
     if (FLAGS_transaction_type != "short" && FLAGS_transaction_type != "long" &&
-        FLAGS_transaction_type != "mix" && FLAGS_transaction_type != "mix_by_thread" &&
-        FLAGS_transaction_type != "short_by_thread" &&
+        FLAGS_transaction_type != "mix" &&
+        FLAGS_transaction_type != "mix_by_thread" && FLAGS_transaction_type != "short_by_thread" &&
+        FLAGS_transaction_type != "mix_scanw" && FLAGS_transaction_type != "short_scanw" &&
         FLAGS_transaction_type != "read_only") {
         LOG_FIRST_N(ERROR, 1) << log_location_prefix << "Invalid type of transaction.";
     }
@@ -252,6 +256,12 @@ static void load_flags() {
         printf("FLAGS_epoch_duration : (unset)\n"); // NOLINT
     }
 
+    if (!gflags::GetCommandLineFlagInfoOrDie("waiting_resolver_threads").is_default) {
+        printf("FLAGS_waiting_resolver_threads : %zu\n", FLAGS_waiting_resolver_threads); // NOLINT
+    } else {
+        printf("FLAGS_waiting_resolver_threads : (unset)\n"); // NOLINT
+    }
+
     printf("Fin load_flags()\n"); // NOLINT
 }
 
@@ -265,7 +275,12 @@ int main(int argc, char* argv[]) try { // NOLINT
 
     database_options opt{};
     if (!gflags::GetCommandLineFlagInfoOrDie("epoch_duration").is_default) {
+        printf("FLAGS_epoch_duration=%zu\n",FLAGS_epoch_duration);
         opt.set_epoch_time(FLAGS_epoch_duration);
+    }
+    if (!gflags::GetCommandLineFlagInfoOrDie("waiting_resolver_threads").is_default) {
+        printf("FLAGS_waiting_resolver_threads=%zu\n",FLAGS_waiting_resolver_threads);
+        opt.set_waiting_resolver_threads(FLAGS_waiting_resolver_threads);
     }
 
     init(opt); // NOLINT
@@ -335,6 +350,17 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                             FLAGS_scan_length, rnd, zipf);
                 is_ltx = true;
             }
+        } else if (FLAGS_transaction_type == "mix_scanw" || FLAGS_transaction_type == "short_scanw") {
+            // gen scan
+            gen_tx_scan(opr_set, FLAGS_key_length, FLAGS_record,
+                        FLAGS_scan_length, rnd, zipf);
+            // gen update
+            for (std::size_t i = 0; i < FLAGS_ops; ++i) {
+                std::uint64_t keynm = zipf() % FLAGS_record;
+                opr_set.emplace_back(OP_TYPE::UPDATE,
+                    make_key(FLAGS_key_length, keynm)); // NOLINT
+            }
+            is_ltx = true;
         } else {
             if (rnd.next() < ltx_ratio) {
                 std::string read_type;
@@ -359,11 +385,13 @@ void worker(const std::size_t thid, char& ready, const bool& start,
         // tx begin
         transaction_options::transaction_type tt{};
         if (FLAGS_transaction_type == "short" || FLAGS_transaction_type == "short_by_thread" ||
-            (FLAGS_transaction_type == "mix_by_thread" && thid!=0)) {
+            (FLAGS_transaction_type == "mix_by_thread" && thid!=0) ||
+            FLAGS_transaction_type == "short_scanw") {
             tt = transaction_options::transaction_type::SHORT;
             ret = tx_begin({token, tt});
         } else if (FLAGS_transaction_type == "long" || FLAGS_transaction_type == "mix" ||
-                   (FLAGS_transaction_type == "mix_by_thread" && thid==0)) {
+                   (FLAGS_transaction_type == "mix_by_thread" && thid==0) ||
+                   FLAGS_transaction_type == "mix_scanw") {
             tt = (FLAGS_transaction_type == "long" || is_ltx) ?
                  transaction_options::transaction_type::LONG :
                  transaction_options::transaction_type::SHORT;
@@ -398,6 +426,7 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                     if (ret == Status::ERR_FATAL) {
                         LOG(FATAL) << log_location_prefix;
                     }
+                    if (loadAcquire(quit)) goto ABORT_WITHOUT_COUNT;
                 }
             } else if (itr.get_type() == OP_TYPE::UPDATE) {
             retry_update:
