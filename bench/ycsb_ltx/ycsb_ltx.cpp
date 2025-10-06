@@ -526,8 +526,9 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                     } while (ret == Status::WARN_CONCURRENT_INSERT || ret == Status::WARN_CONCURRENT_UPDATE);
                     if (ret == Status::ERR_CC) { goto ABORTED; } // NOLINT
                     if (ret == Status::WARN_NOT_FOUND) {
+                      goto read_next;
                       /*
-                      if (++warn_count<100) continue;
+                      if (++warn_count<10) {continue;}
                       uint64_t lkey, rkey;
                       std::memcpy(&lkey, itr.get_scan_l_key().data(), sizeof(lkey));
                       lkey=__builtin_bswap64(lkey);
@@ -535,11 +536,12 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                       rkey=__builtin_bswap64(rkey);
                       printf("lkey=%zu, lkey_pos=%f\nrkey=%zu, key_step=%zu, (rkey-lkey+1)/key_step=%zu, read_count=%zu\n",
                         lkey, lkey*1.0/key_max, rkey, key_step, (rkey-lkey+1)/key_step, read_count);
-                       */
                       goto ABORTED;
+                      */
                     }
                     if (ret != Status::OK) { LOG(FATAL) << "unexpected error: " << ret << " "; }
                     ++read_count;
+                read_next:
                     ret = next(token, hd);
                     if (loadAcquire(quit)) {
                         // for fast exit if it is over exp time.
