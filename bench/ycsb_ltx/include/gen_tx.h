@@ -150,4 +150,63 @@ static void gen_tx_scan(std::vector<opr_obj>& opr_set,
                          make_key(key_len, key_r_nm));
 }
 
+
+/**
+ * @brief generate search/update operations.
+ * @param[in,out] opr_set
+ * @param[in] key_len
+ * @param[in] tpnm number of tuple.
+ * @param[in] thread_num number of worker thread.
+ * @param[in] thid id of thread. start from zero.
+ * @param[in] opnm
+ * @param[in] ops_read_type point or range.
+ * @param[in] ops_write_type update or insert or readmodifywrite.
+ * @param[in] rratio
+ * @param[in] scan_length
+ * @param[in,out] rnd
+ * @param[in,out] zipf
+ */
+static void gen_tx_rw(std::vector<opr_obj>& opr_set, const std::size_t key_len,
+                      const std::size_t tpnm, const std::size_t thread_num,
+                      const std::size_t thid, const std::size_t opnm,
+                      const std::string& ops_read_type,
+                      const std::string& ops_write_type,
+                      const std::size_t rratio, const std::size_t scan_elem_n, Xoroshiro128Plus& rnd,
+                      FastZipf& zipf) {
+    using namespace shirakami;
+    opr_set.clear();
+    for (std::size_t i = 0; i < opnm; ++i) {
+        std::uint64_t keynm = zipf() % tpnm;
+        if ((rnd.next() % 100) < rratio) { // NOLINT
+            if (ops_read_type == "point") {
+                opr_set.emplace_back(OP_TYPE::SEARCH,
+                                     make_key(key_len, keynm)); // NOLINT
+            } else if (ops_read_type == "range") {
+              uint64_t key_l_nm = zipf() % (tpnm - scan_elem_n + 1);
+                uint64_t key_r_nm = key_l_nm + (scan_elem_n - 1);
+                if (key_r_nm >= tpnm) {
+                    LOG_FIRST_N(ERROR, 1) << log_location_prefix << "fatal error";
+                }
+                opr_set.emplace_back(OP_TYPE::SCAN, make_key(key_len, key_l_nm),
+                    make_key(key_len, key_r_nm));
+            } else {
+                LOG(FATAL) << "invalid read type";
+            }
+        } else {
+            if (ops_write_type == "update") {
+                opr_set.emplace_back(OP_TYPE::UPDATE,
+                                     make_key(key_len, keynm)); // NOLINT
+            } else if (ops_write_type == "insert") {
+                opr_set.emplace_back(OP_TYPE::INSERT,
+                                     make_key(key_len, keynm)); // NOLINT
+            } else if (ops_write_type == "readmodifywrite") {
+                opr_set.emplace_back(OP_TYPE::SEARCH,
+                                     make_key(key_len, keynm)); // NOLINT
+                opr_set.emplace_back(OP_TYPE::UPDATE,
+                                     make_key(key_len, keynm)); // NOLINT
+            }
+        }
+    }
+}
+
 } // namespace shirakami

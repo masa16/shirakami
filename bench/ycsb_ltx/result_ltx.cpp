@@ -48,6 +48,7 @@ void Result::displayAbortCounts() const {
 void Result::displayAbortRate() const {
     if (total_abort_counts_ == 0) {
         std::cout << "abort_rate:\t0" << std::endl;
+        std::cout << "ltx_abort_rate:\t0" << std::endl;
     } else {
         constexpr int prec = 8;
         long double ave_rate =

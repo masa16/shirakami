@@ -65,6 +65,7 @@ DEFINE_double(ltx_ratio, 0.0, "ratio of LTX.");                        // NOLINT
 DEFINE_uint64(ltx_ops, 1, "operetions per tx for LTX.");               // NOLINT
 DEFINE_string(ltx_read_type, "off", "type of read operation in LTX."); // NOLINT
 DEFINE_uint64(ltx_rratio, 100, "rate of reads in a LTX.");             // NOLINT
+DEFINE_bool(sparse_key, false, "sparse key.");                            // NOLINT
 DEFINE_uint64(thread, 1, "# worker threads.");                         // NOLINT
 DEFINE_string(transaction_type, "short", "type of transaction.");      // NOLINT
 DEFINE_uint64(val_length, 4, "# length of value(payload).");           // NOLINT
@@ -216,7 +217,10 @@ static void load_flags() {
                    << "Rate of reads in a transaction must be in the range 0 "
                       "to 100.";
     }
-
+    // sparse key
+    if (FLAGS_sparse_key) {
+        printf("FLAGS_sparse_key : true\n"); // NOLINT
+    }
 
     // transaction_type
     printf("FLAGS_transaction_type : %s\n", // NOLINT
@@ -282,7 +286,9 @@ int main(int argc, char* argv[]) try { // NOLINT
         printf("FLAGS_waiting_resolver_threads=%zu\n",FLAGS_waiting_resolver_threads);
         opt.set_waiting_resolver_threads(FLAGS_waiting_resolver_threads);
     }
-
+    if (FLAGS_sparse_key) {
+        set_key_step(SIZE_MAX / FLAGS_record);
+    }
     init(opt); // NOLINT
     LOG(INFO) << "start build_db";
     build_db(FLAGS_record, FLAGS_key_length, FLAGS_val_length, FLAGS_thread);
@@ -312,7 +318,13 @@ void worker(const std::size_t thid, char& ready, const bool& start,
     if (!gflags::GetCommandLineFlagInfoOrDie("random_seed").is_default) {
         rnd.seed(FLAGS_random_seed + thid);
     }
-    FastZipf zipf(&rnd, FLAGS_skew, FLAGS_record);
+    size_t key_max = FLAGS_record;
+    size_t key_step = 1;
+    if (FLAGS_sparse_key) {
+        key_step = SIZE_MAX / FLAGS_record;
+        key_max = key_step * FLAGS_record;
+    }
+    FastZipf zipf(&rnd, FLAGS_skew, FLAGS_record, key_step);
     std::reference_wrapper<Result> myres = std::ref(res[thid]);
 
     // this function can be used in Linux environment only.
@@ -333,30 +345,33 @@ void worker(const std::size_t thid, char& ready, const bool& start,
     size_t retry_scan_count=0;
     size_t retry_update_count=0;
     size_t retry_insert_count=0;
+    size_t insert_count=0;
+    size_t tx_count=0;
     storeRelease(ready, 1);
     while (!loadAcquire(start)) _mm_pause();
     while (likely(!loadAcquire(quit))) {
+        //if (++tx_count>20) goto leaving;
         bool is_ltx;
         if (FLAGS_transaction_type == "mix_by_thread" || FLAGS_transaction_type == "short_by_thread") {
             if (thid!=0) {
                 // gen query contents
-                gen_tx_rw(opr_set, FLAGS_key_length, FLAGS_record, FLAGS_thread, thid,
+                gen_tx_rw(opr_set, FLAGS_key_length, key_max, FLAGS_thread, thid,
                           FLAGS_ops, FLAGS_ops_read_type, FLAGS_ops_write_type,
                           FLAGS_rratio, rnd, zipf);
                 is_ltx = false;
             } else {
                 // gen query contents
-                gen_tx_scan(opr_set, FLAGS_key_length, FLAGS_record,
-                            FLAGS_scan_length, rnd, zipf);
+                gen_tx_scan(opr_set, FLAGS_key_length, key_max,
+                            FLAGS_scan_length*key_step, rnd, zipf);
                 is_ltx = true;
             }
         } else if (FLAGS_transaction_type == "mix_scanw" || FLAGS_transaction_type == "short_scanw") {
             // gen scan
-            gen_tx_scan(opr_set, FLAGS_key_length, FLAGS_record,
-                        FLAGS_scan_length, rnd, zipf);
+            gen_tx_scan(opr_set, FLAGS_key_length, key_max,
+                        FLAGS_scan_length*key_step, rnd, zipf);
             // gen update
             for (std::size_t i = 0; i < FLAGS_ops; ++i) {
-                std::uint64_t keynm = zipf() % FLAGS_record;
+                std::uint64_t keynm = zipf() % key_max;
                 opr_set.emplace_back(OP_TYPE::UPDATE,
                     make_key(FLAGS_key_length, keynm)); // NOLINT
             }
@@ -367,15 +382,15 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                 read_type = (FLAGS_ltx_read_type == "off") ?
                   FLAGS_ops_read_type : FLAGS_ltx_read_type;
                 // gen query contents
-                gen_tx_rw(opr_set, FLAGS_key_length, FLAGS_record, FLAGS_thread, thid,
+                gen_tx_rw(opr_set, FLAGS_key_length, key_max, FLAGS_thread, thid,
                           FLAGS_ltx_ops, read_type, FLAGS_ops_write_type,
-                          FLAGS_ltx_rratio, rnd, zipf);
+                          FLAGS_ltx_rratio, FLAGS_scan_length * key_step, rnd, zipf);
                 is_ltx = true;
             } else {
                 // gen query contents
-                gen_tx_rw(opr_set, FLAGS_key_length, FLAGS_record, FLAGS_thread, thid,
+                gen_tx_rw(opr_set, FLAGS_key_length, key_max, FLAGS_thread, thid,
                           FLAGS_ops, FLAGS_ops_read_type, FLAGS_ops_write_type,
-                          FLAGS_rratio, rnd, zipf);
+                          FLAGS_rratio, FLAGS_scan_length * key_step, rnd, zipf);
                 is_ltx = false;
             }
         }
@@ -416,7 +431,29 @@ void worker(const std::size_t thid, char& ready, const bool& start,
         }
 
         // execute operations
+        //size_t itr_count=0;
         for (auto&& itr : opr_set) {
+            //printf("%zu|%zu|%i|%s\n", thid, itr_count, itr.get_type(), itr.get_key());
+            /*
+            std::cout << thid << "|" <<tx_count<< "|" <<itr_count<< "|" <<itr.get_type()<< "|";
+            if (itr.get_type() == OP_TYPE::SCAN) {
+              for (char c : itr.get_scan_l_key()) {
+                std::cout << std::setw(2) << static_cast<int>(static_cast<unsigned char>(c)) << " ";
+              }
+              std::cout << "|";
+              for (char c : itr.get_scan_r_key()) {
+                std::cout << std::setw(2) << static_cast<int>(static_cast<unsigned char>(c)) << " ";
+              }
+            } else {
+              for (char c : itr.get_key()) {
+                // unsigned char でキャストすることで、バイト値を正しく扱います [1]。
+                // static_cast<unsigned char>(c) とすることで、正しく16進数で表示されます [1]。
+                std::cout << std::setw(2) << static_cast<int>(static_cast<unsigned char>(c)) << " ";
+              }
+            }
+            std::cout << "|" <<std::endl;
+            ++itr_count;
+             */
             if (itr.get_type() == OP_TYPE::SEARCH) {
                 for (;;) {
                     std::string vb{};
@@ -444,6 +481,7 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                 }
             } else if (itr.get_type() == OP_TYPE::INSERT) {
             retry_insert:
+                insert_count++;
                 ret = insert(token, storage, itr.get_key(),
                              std::string(FLAGS_val_length, '0'));
                 if (ret == Status::WARN_WRITE_WITHOUT_WP || ret == Status::WARN_CONFLICT_ON_WRITE_PRESERVE) {
@@ -452,6 +490,9 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                     _mm_pause();
                     goto retry_insert;
                     //goto ABORTED;
+                }
+                if (ret == Status::WARN_ALREADY_EXISTS) {
+                    goto ABORTED;
                 }
                 if (ret != Status::OK) {
                     LOG(FATAL) << "unexpected error, rc: " << ret << " is_ltx=" << is_ltx << " ";
@@ -476,6 +517,7 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                     LOG(FATAL) << "unexpected error, rc: " << ret << " ";
                 }
                 std::string vb{};
+                size_t read_count=0, warn_count=0;
                 do {
                     do {
                         ret = read_value_from_scan(token, hd, vb);
@@ -483,7 +525,21 @@ void worker(const std::size_t thid, char& ready, const bool& start,
                         _mm_pause();
                     } while (ret == Status::WARN_CONCURRENT_INSERT || ret == Status::WARN_CONCURRENT_UPDATE);
                     if (ret == Status::ERR_CC) { goto ABORTED; } // NOLINT
+                    if (ret == Status::WARN_NOT_FOUND) {
+                      /*
+                      if (++warn_count<100) continue;
+                      uint64_t lkey, rkey;
+                      std::memcpy(&lkey, itr.get_scan_l_key().data(), sizeof(lkey));
+                      lkey=__builtin_bswap64(lkey);
+                      std::memcpy(&rkey, itr.get_scan_r_key().data(), sizeof(rkey));
+                      rkey=__builtin_bswap64(rkey);
+                      printf("lkey=%zu, lkey_pos=%f\nrkey=%zu, key_step=%zu, (rkey-lkey+1)/key_step=%zu, read_count=%zu\n",
+                        lkey, lkey*1.0/key_max, rkey, key_step, (rkey-lkey+1)/key_step, read_count);
+                       */
+                      goto ABORTED;
+                    }
                     if (ret != Status::OK) { LOG(FATAL) << "unexpected error: " << ret << " "; }
+                    ++read_count;
                     ret = next(token, hd);
                     if (loadAcquire(quit)) {
                         // for fast exit if it is over exp time.
@@ -537,4 +593,5 @@ void worker(const std::size_t thid, char& ready, const bool& start,
     if (retry_scan_count>0) printf("retry_scan_count=%zu thid=%zu\n",retry_scan_count,thid);
     if (retry_update_count>0) printf("retry_update_count=%zu thid=%zu\n",retry_update_count,thid);
     if (retry_insert_count>0) printf("retry_insert_count=%zu thid=%zu\n",retry_insert_count,thid);
+    if (insert_count>0) printf("insert_count=%zu thid=%zu\n",insert_count,thid);
 }

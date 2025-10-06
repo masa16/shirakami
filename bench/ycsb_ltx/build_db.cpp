@@ -61,10 +61,10 @@ void parallel_build_db(const std::size_t start, const std::size_t end,
             if (ret != Status::OK) { LOG_FIRST_N(ERROR, 1); }
         }
         if (get_use_separate_storage()) {
-            ret = insert(token, pbd_storage, make_key(key_length, i),
+            ret = insert(token, pbd_storage, make_key(key_length, i*key_step),
                          std::string(value_length, '0'));
         } else {
-            ret = insert(token, storage, make_key(key_length, i),
+            ret = insert(token, storage, make_key(key_length, i*key_step),
                          std::string(value_length, '0'));
         }
         if (ret != Status::OK) { LOG_FIRST_N(ERROR, 1) << ret; }

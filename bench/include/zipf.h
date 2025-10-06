@@ -24,6 +24,7 @@ class FastZipf {
     const size_t nr_;
     const double alpha_, zetan_, eta_;
     const double threshold_;
+    const size_t key_step_;
 
 public:
     FastZipf(Xoroshiro128Plus* const rnd, const double theta,
@@ -33,7 +34,22 @@ public:
           eta_((1.0 - std::pow(2.0 / static_cast<double>(nr), // NOLINT
                                1.0 - theta)) /                // NOLINT
                (1.0 - zeta(2, theta) / zetan_)),
-          threshold_(1.0 + std::pow(0.5, theta)) { // NOLINT
+          threshold_(1.0 + std::pow(0.5, theta)),
+          key_step_(1) { // NOLINT
+        assert(0.0 <= theta);                      // NOLINT
+        assert(theta < 1.0);                       // NOLINT
+        // 1.0 can not be specified.
+    }
+
+    FastZipf(Xoroshiro128Plus* const rnd, const double theta,
+      const std::size_t nr, std::size_t key_step)
+        : rnd_(rnd), nr_(nr), alpha_(1.0 / (1.0 - theta)),
+          zetan_(zeta(nr, theta)),
+          eta_((1.0 - std::pow(2.0 / static_cast<double>(nr), // NOLINT
+                               1.0 - theta)) /                // NOLINT
+               (1.0 - zeta(2, theta) / zetan_)),
+          threshold_(1.0 + std::pow(0.5, theta)),
+          key_step_(key_step) { // NOLINT
         assert(0.0 <= theta);                      // NOLINT
         assert(theta < 1.0);                       // NOLINT
         // 1.0 can not be specified.
@@ -46,7 +62,8 @@ public:
           eta_((1.0 - std::pow(2.0 / static_cast<double>(nr), // NOLINT
                                1.0 - theta)) /                // NOLINT
                (1.0 - zeta(2, theta) / zetan_)),
-          threshold_(1.0 + std::pow(0.5, theta)) { // NOLINT
+          threshold_(1.0 + std::pow(0.5, theta)),
+          key_step_(1) { // NOLINT
         assert(0.0 <= theta);                      // NOLINT
         assert(theta < 1.0);                       // NOLINT
         // 1.0 can not be specified.
@@ -58,7 +75,7 @@ public:
         if (uz < 1.0) return 0;
         if (uz < threshold_) return 1;
         return static_cast<size_t>(static_cast<double>(nr_) *
-                                   std::pow(eta_ * u - eta_ + 1.0, alpha_));
+                                   std::pow(eta_ * u - eta_ + 1.0, alpha_) * key_step_);
     }
 
     [[maybe_unused]] std::uint64_t rand() { return rnd_->next(); } // NOLINT

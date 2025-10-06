@@ -45,6 +45,14 @@ inline bool use_separate_storage{false}; // NOLINT
 alignas(CACHE_LINE_SIZE) inline std::vector< // NOLINT
         Storage> separate_storage{};         // NOLINT
 
+
+/**
+ * @brief For ycsb_ltx.cpp
+ * @details key step
+ * Therefore, there is no conflict.
+ */
+inline size_t key_step{1}; // NOLINT
+
 /**
  * global variables getter / setter
  */
@@ -54,6 +62,11 @@ inline std::vector<Storage>& get_separate_storage() { return separate_storage; }
 inline bool get_use_separate_storage() { return use_separate_storage; }
 
 inline void set_use_separate_storage(bool tf) { use_separate_storage = tf; }
+
+inline bool get_key_step() { return key_step; }
+
+inline void set_key_step(size_t ki) { key_step = ki; }
+
 
 /**
  * Other functions.
